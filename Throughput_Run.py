@@ -11,16 +11,17 @@ import numpy as np
 NODE_ADDRS = {
     0: "localhost",
     1: "region-42.seetacloud.com",
-    2: "connect.nmb2.seetacloud.com",
-    3: "connect.westc.gpuhub.com",
-    4: "connect.easts.gpuhub.com"
+    2: "connect.westc.gpuhub.com",
+    3: "connect.bjb1.seetacloud.com",
+    4: "connect.nmb2.seetacloud.com"
 }
 
+REMOTE_USER = "root"
 REMOTE_PORT = {
-    1: "19955",
-    2: "28557",
-    3: "22733",
-    4: "19853"
+  1: "19955",
+  2: "22733",
+  3: "23471",
+  4: "28557"
 }
 
 GPU_MAPPING = {
@@ -31,8 +32,7 @@ GPU_MAPPING = {
     4: "3"
 }
 
-REMOTE_USER = "root"
-LOCAL_RESULT_DIR = "/home/yujie/Documents/auto_results"
+LOCAL_RESULT_DIR = "/home/yujie/Documents/Throughput_result"
 
 def init_ssh_agent():
     agent_process = subprocess.Popen(['ssh-agent', '-s'], stdout=subprocess.PIPE)
@@ -62,10 +62,11 @@ def remote_worker(node_id, percent, return_dict_path, mode="realtrain", data_fra
                 timeout=30
             )
             print(f"connect to node {node_id} ({node_ip})")
+
             remote_command = (
                 f"CUDA_VISIBLE_DEVICES={gpu_id} "
                 f"CUDA_MPS_ACTIVE_THREAD_PERCENTAGE={percent_str} "
-                f"/root/miniconda3/envs/pytorch_env/bin/python /root/GPU_train_worker.py "
+                f"/root/miniconda3/envs/pytorch_env/bin/python /root/Throughput_Baseline_Woker.py"
                 f"--node_id={node_id} "
                 f"--percent={percent_str} "
                 f"--return_dict_path={return_dict_path} "
@@ -87,8 +88,9 @@ def remote_worker(node_id, percent, return_dict_path, mode="realtrain", data_fra
             print(f"from node {node_id} saved file: {local_save_path} successful")
         except Exception as e:
             print(f"connect node {node_id} failed: {str(e)}")
+
     else:
-        script_path = "/home/yujie/Documents/vscode/remote_project/GPU_train_worker.py"
+        script_path = "/home/yujie/Github/Throughput_Baseline_Woker.py"
         command = (
             f"CUDA_VISIBLE_DEVICES={gpu_id} "
             f"CUDA_MPS_ACTIVE_THREAD_PERCENTAGE={percent_str} "
@@ -113,21 +115,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_node', type=int, required=True)
     parser.add_argument('--percent_list', type=str, required=True, help='JSON，like[[100,90],[80,70]]')
-    parser.add_argument('--alpha', type=float, required=True, help='alpha（computation time）')
-    parser.add_argument('--beta', type=float, required=True, help='beta（waiting time）')
+    parser.add_argument('--output_path', type=str, default="results.jsonl")
     args = parser.parse_args()
-
+    
     Num_node = args.num_node
     percent_list = json.loads(args.percent_list)
-    alpha = args.alpha
-    beta = args.beta
-
-    assert abs(alpha + beta - 1.0) < 1e-6, "The sum of alpha and beta must be 1"
 
     for percent_config in percent_list:
-        assert len(percent_config) == Num_node
         print(f"\n=== Running with GPU percentages: {percent_config} ===")
 
+        # === Baseline ===
         baseline_paths = {i: os.path.join("/tmp", f"node{i}_baseline.json") for i in range(Num_node)}
         processes = []
         for node_id in range(Num_node):
@@ -139,27 +136,21 @@ def main():
         for p in processes:
             p.join()
 
-        training_times = []
+        baseline_results = []
         for i in range(Num_node):
             path = os.path.join(LOCAL_RESULT_DIR, f"node{i}_baseline.json")
             with open(path, 'r') as f:
                 baseline = json.load(f)
-            training_times.append(baseline["training_time"])
-            print(f"node {baseline['node_id']} baseline finish")
+            baseline_results.append((baseline["node_id"], baseline["avg_epoch_time"]))
+            print(f"Node {baseline['node_id']} baseline finish ，avg epoch: {baseline['avg_epoch_time']:.2f}s")
 
-        # simulate waiting time
-        Lam, lam_upper_bound = 5, 10
-        Mu, mu_upper_bound = 10, 20
-        waiting_times = [np.clip(np.random.poisson(Lam), 0, lam_upper_bound) * np.clip(np.random.exponential(Mu), 0, mu_upper_bound) for _ in range(Num_node)]
-        print(f"waiting_time: {waiting_times}")
+        epoch_times = [t for _, t in baseline_results]
+        inv_speeds = [1.0 / t for t in epoch_times]
+        total_speed = sum(inv_speeds)
+        data_fractions = [s / total_speed for s in inv_speeds]
 
-        costs = [alpha * t + beta * w for t, w in zip(training_times, waiting_times)]
-        inv_cost = [1 / c for c in costs]
-        total_inv = sum(inv_cost)
-        data_fractions = [ic / total_inv for ic in inv_cost]
-
-        print("data fraction:", data_fractions)
-
+        print("Data fractions:", data_fractions)
+        # === Realtrain ===
         realtrain_paths = {i: os.path.join("/tmp", f"node{i}_realtrain.json") for i in range(Num_node)}
         processes = []
         for node_id in range(Num_node):

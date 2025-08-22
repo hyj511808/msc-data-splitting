@@ -20,11 +20,10 @@ def build_dataset(node_id: int, indices_path: str = None, data_fraction: float =
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
 
-    # 建议用 download=False，避免远程首次运行卡住
     full_dataset = torchvision.datasets.CIFAR10(
         root='./data',
         train=True,
-        download=False,
+        download=True,
         transform=transform
     )
 
@@ -34,18 +33,15 @@ def build_dataset(node_id: int, indices_path: str = None, data_fraction: float =
         print(f"[节点 {node_id}] 载入不重叠索引：{indices_path}，样本数={len(indices)}")
         return Subset(full_dataset, indices)
     else:
-        # 回退到按比例随机抽样（可能跨节点重复，不建议长期用）
-        if indices_path is not None:
-            print(f"[节点 {node_id}] 警告：找不到索引文件 {indices_path}，回退到 data_fraction={data_fraction}")
         if data_fraction < 1.0:
             torch.manual_seed(42 + node_id)
             total_size = len(full_dataset)
             subset_size = int(total_size * data_fraction)
             indices = torch.randperm(total_size)[:subset_size]
-            print(f"[节点 {node_id}] 使用 {data_fraction*100:.2f}% 数据 ({subset_size}/{total_size}) [回退模式]")
+            print(f"[Node {node_id}] uses {data_fraction*100:.2f}%")
             return Subset(full_dataset, indices.tolist())
         else:
-            print(f"[节点 {node_id}] 使用全部数据 [回退模式]")
+            print(f"[Node {node_id}] uses full dataset]")
             return full_dataset
 
 def train(device, train_dataset, epochs=20, node_id=0):
@@ -69,7 +65,7 @@ def train(device, train_dataset, epochs=20, node_id=0):
     epoch_times, batch_times = [], []
     start_time = time.time()
 
-    print(f"[节点 {node_id}] 开始训练，共 {epochs} 轮")
+    print(f"[Node {node_id}] start，all {epochs} epochs")
     for epoch in range(epochs):
         epoch_start = time.time()
         for i, data in enumerate(trainloader):
@@ -87,7 +83,7 @@ def train(device, train_dataset, epochs=20, node_id=0):
 
         epoch_end = time.time()
         epoch_times.append(epoch_end - epoch_start)
-        print(f"[节点 {node_id}] 第 {epoch+1}/{epochs} 轮耗时: {epoch_times[-1]:.2f} 秒")
+        print(f"[Node {node_id}] {epoch+1}/{epochs} epoch spends {epoch_times[-1]:.2f} s")
 
     end_time = time.time()
     training_time = end_time - start_time
@@ -111,12 +107,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     set_cuda_mps_percentage(args.percent)
-    print(f"[节点 {args.node_id}] 设置 GPU 利用率为 {args.percent}%")
+    print(f"[Node {args.node_id}] set GPU {args.percent}%")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     epochs = 5 if args.mode == "baseline" else 20
 
-    # === 构建数据集（优先索引文件）===
     train_dataset = build_dataset(
         node_id=args.node_id,
         indices_path=args.indices_path,
@@ -130,7 +125,7 @@ if __name__ == "__main__":
         node_id=args.node_id
     )
 
-    # === 等待时间（可选传入，否则模拟）===
+    # waiting time
     if args.waiting_time is not None:
         waiting_time = args.waiting_time
     else:
@@ -151,12 +146,11 @@ if __name__ == "__main__":
         "mode": args.mode
     }
 
-    # 写结果
     os.makedirs(os.path.dirname(args.return_dict_path), exist_ok=True)
     with open(args.return_dict_path, 'a' if args.mode == "realtrain" else 'w') as f:
         json.dump(result, f)
         f.write('\n')
-    print(f"[节点 {args.node_id}] 结果已写入：{args.return_dict_path}")
+    print(f"[Node {args.node_id}] result is wrote in {args.return_dict_path}")
 
 
 
